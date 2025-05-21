@@ -67,7 +67,7 @@ python -m src.main
 - Create and manage vector indices for fast retrieval
 - Query the index with natural language questions
 - View source references from retrieved documents
-- Interactive command-line interface with Panel
+- Interactive command-line interface with Click
 - Web-based chat interface with Gradio
 
 ## Project Structure
@@ -75,7 +75,7 @@ python -m src.main
 - `src/`: Python source code
   - `youtube_utils.py`: YouTube transcript downloading functionality
   - `llama_utils.py`: LlamaIndex setup and querying functionality
-  - `cli_app.py`: Panel-based command-line interface
+  - `click_app.py`: Click-based command-line interface
   - `ui_app.py`: Gradio-based web interface
   - `main.py`: Script to run both interfaces
 - `data/`: Local data storage
