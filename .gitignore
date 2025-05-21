@@ -1,0 +1,28 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Vector storage and large data files
+data/storage/**
+data/transcripts/**/*.txt
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Editor specific files
+.vscode/
+.idea/
+
+# Logs
+*.log

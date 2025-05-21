@@ -1,0 +1,19 @@
+# LlamaIndex core and extensions
+llama-index-core
+llama-index-llms-openai
+llama-index-embeddings-openai
+llama-index-readers-file
+
+# Utilities
+python-dotenv
+google-api-python-client
+youtube_transcript_api
+tqdm
+
+# UI components
+gradio
+
+# CLI
+click
+
+# Make sure you have the OpenAI API key in your .env file for completion and embedding
