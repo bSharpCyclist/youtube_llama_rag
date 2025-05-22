@@ -4,6 +4,10 @@ llama-index-llms-openai
 llama-index-embeddings-openai
 llama-index-readers-file
 
+llama-index-llms-gemini
+llama-index-embeddings-gemini
+google-generativeai
+
 # Utilities
 python-dotenv
 google-api-python-client
