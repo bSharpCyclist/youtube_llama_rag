@@ -2,18 +2,19 @@
 llama-index-core
 llama-index-llms-openai
 llama-index-embeddings-openai
-llama-index-readers-file
+llama-index-readers-file  # For SimpleDirectoryReader and other file-based loading
+llama-index-llms-gemini
+llama-index-embeddings-gemini
+
+# LLM SDKs (often direct dependencies for LlamaIndex extensions)
+openai
+google-generativeai
 
 # Utilities
 python-dotenv
-google-api-python-client
-youtube_transcript_api
-tqdm
+google-api-python-client  # For YouTube Data API (metadata, alternative transcript fetching)
+youtube_transcript_api  # Primary transcript fetching
+tqdm  # Useful for progress bars, can be kept if used or a sub-dependency
 
 # UI components
-gradio
-
-# CLI
-click
-
-# Make sure you have the OpenAI API key in your .env file for completion and embedding
+streamlit
