@@ -1,83 +1,78 @@
-# YouTube Transcript RAG Chatbot
+# YouTube Llama RAG Project
 
-This project demonstrates how to build a Retrieval-Augmented Generation (RAG) system using LlamaIndex. It allows you to:
+## Overview
 
-1. Download transcripts from YouTube videos or playlists
-2. Create a searchable vector index from these transcripts
-3. Query the indexed content through either:
-   - A command-line interface (using Click)
-   - A web-based chat interface (using Gradio)
+This project allows you to chat with YouTube videos using Large Language Models (LLMs) through a Streamlit web interface. It fetches YouTube video transcripts, processes them, and uses Retrieval Augmented Generation (RAG) to answer your questions about the video content. It supports LLMs from OpenAI and Google Gemini.
+
+## Key Files
+
+*   `youtube_utils.py`: Contains utility functions for fetching YouTube video transcripts.
+*   `llama_utils_llms.py`: Manages the RAG pipeline, including data loading, indexing, and querying using LlamaIndex with different LLM providers.
+*   `streamlit_app_llms.py`: The main Streamlit application file that provides the user interface for interacting with YouTube videos.
 
 ## Setup
 
-1. Clone the repository
-2. Install the requirements:
-```bash
-pip install -r requirements.txt
-```
-3. Copy `.env.example` to `.env` and add your API keys:
-```bash
-cp .env.example .env
-# Edit .env file with your actual API keys
-```
+1.  **Clone the repository:**
+    ```bash
+    git clone <your-repository-url>
+    cd youtube_llama_rag
+    ```
 
-## Required API Keys
+2.  **Create a virtual environment and activate it:**
+    ```bash
+    python -m venv venv
+    # On Windows
+    venv\Scripts\activate
+    # On macOS/Linux
+    source venv/bin/activate
+    ```
 
-- **OpenAI API Key**: Used for embeddings and completions
-- **YouTube API Key**: Used to fetch playlist information (optional if you already have video IDs)
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Set up environment variables:**
+    Create a `.env` file in the root directory by copying the `.env.example` file:
+    ```bash
+    cp .env.example .env
+    ```
+    Open the `.env` file and add your API keys:
+    ```
+    YOUTUBE_API_KEY="your_youtube_api_key_here" # Optional, used if transcript fetching via youtube-transcript-api fails for some videos
+    OPENAI_API_KEY="your_openai_api_key_here"
+    GEMINI_API_KEY="your_gemini_api_key_here"
+    ```
+    You can also update model names and other settings in this file if needed.
 
 ## Usage
 
-### Command Line Interface (CLI)
+Run the Streamlit application:
 
 ```bash
-# Run the CLI app
-# Download YouTube transcripts
-python -m src.click_app download --playlist PLY6oTPmKMsdZR6EjjYBBBlmYbyF4yYZwT --folder ancient-aliens
-# OR use individual videos
-python -m src.click_app download --videos "https://www.youtube.com/watch?v=dQw4w9WgXcQ" "https://www.youtube.com/watch?v=jNQXAC9IVRw" --folder my-videos
-
-# Create an index from the downloaded transcripts
-python -m src.click_app index --folder ancient-aliens
-
-# Query the index
-python -m src.click_app query --index ancient-aliens --question "What evidence supports ancient astronaut theory?" --top-k 3
-
-# Show help information
-python -m src.click_app --help
+streamlit run streamlit_app_llms.py
 ```
 
-### Web Chat Interface
+Open your web browser and go to the local URL provided by Streamlit (usually `http://localhost:8501`).
 
-```bash
-# Run the web interface
-python -m src.ui_app
-```
+Enter a YouTube video URL, select your desired LLM provider and model, and start asking questions!
 
-### All-in-one
+## Configuration
 
-```bash
-# Run both interfaces
-python -m src.main
-```
+The following environment variables can be configured in the `.env` file:
 
-## Features
+*   `YOUTUBE_API_KEY`: Your YouTube Data API v3 key (optional, for robust transcript fetching).
+*   `OPENAI_API_KEY`: Your OpenAI API key.
+*   `OPENAI_LLM_MODEL`: The OpenAI LLM model to use (e.g., `gpt-3.5-turbo`, `gpt-4`, `o4-mini`).
+*   `OPENAI_EMBEDDING_MODEL`: The OpenAI embedding model to use (e.g., `text-embedding-ada-002`, `text-embedding-3-small`).
+*   `GEMINI_API_KEY`: Your Google Gemini API key.
+*   `GEMINI_LLM_MODEL`: The Gemini LLM model to use (e.g., `models/gemini-1.5-flash-latest`).
+*   `GEMINI_EMBEDDING_MODEL`: The Gemini embedding model to use (e.g., `models/text-embedding-004`).
+*   `CHUNK_SIZE`: Size of chunks for text splitting.
+*   `CHUNK_OVERLAP`: Overlap between chunks.
+*   `TEMPERATURE`: LLM temperature for generation.
+*   `MAX_TOKENS`: Maximum tokens for LLM response.
 
-- Download YouTube transcripts (individual videos or playlists)
-- Create and manage vector indices for fast retrieval
-- Query the index with natural language questions
-- View source references from retrieved documents
-- Interactive command-line interface with Click
-- Web-based chat interface with Gradio
+## Contributing
 
-## Project Structure
-
-- `src/`: Python source code
-  - `youtube_utils.py`: YouTube transcript downloading functionality
-  - `llama_utils.py`: LlamaIndex setup and querying functionality
-  - `click_app.py`: Click-based command-line interface
-  - `ui_app.py`: Gradio-based web interface
-  - `main.py`: Script to run both interfaces
-- `data/`: Local data storage
-  - `transcripts/`: Downloaded transcripts
-  - `storage/`: Vector indices and related data
+Contributions are welcome! Please feel free to submit a pull request or open an issue.
