@@ -7,8 +7,8 @@ This project allows you to chat with YouTube videos using Large Language Models 
 ## Key Files
 
 *   `youtube_utils.py`: Contains utility functions for fetching YouTube video transcripts.
-*   `llama_utils_llms.py`: Manages the RAG pipeline, including data loading, indexing, and querying using LlamaIndex with different LLM providers.
-*   `streamlit_app_llms.py`: The main Streamlit application file that provides the user interface for interacting with YouTube videos.
+*   `llama_utils.py`: Manages the RAG pipeline, including data loading, indexing, and querying using LlamaIndex with different LLM providers.
+*   `streamlit_app.py`: The main Streamlit application file that provides the user interface for interacting with YouTube videos.
 
 ## Setup
 
@@ -47,10 +47,10 @@ This project allows you to chat with YouTube videos using Large Language Models 
 
 ## Usage
 
-Run the Streamlit application:
+Run the Streamlit application (inside src directory):
 
 ```bash
-streamlit run streamlit_app_llms.py
+streamlit run streamlit_app.py
 ```
 
 Open your web browser and go to the local URL provided by Streamlit (usually `http://localhost:8501`).

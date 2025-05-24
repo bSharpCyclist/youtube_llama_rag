@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Optional
 
 try:
     from youtube_utils import save_transcripts_from_playlist, save_transcripts_from_video_list
-    from llama_utils_llms import LlamaIndexRAG 
+    from llama_utils import LlamaIndexRAG 
 except ImportError as e:
     st.error(f"Failed to import local modules (youtube_utils, llama_utils): {e}. "
              "Ensure they are in the same directory as the Streamlit app or in the Python path.")
