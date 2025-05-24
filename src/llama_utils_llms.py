@@ -1,8 +1,8 @@
-# llama_utils.py
+# llama_utils.py (formerly llama_utils_llms.py)
 """
-LlamaIndex functionality for indexing and querying YouTube transcripts,
-with support for multiple LLM providers (OpenAI, Gemini) and
-provider-specific index storage.
+LlamaIndex functionality for indexing and querying YouTube transcripts.
+Supports VectorStoreIndex for Q&A and SummaryIndex for summarization.
+Uses a single LLM provider for both embeddings and generation.
 """
 
 import os
@@ -14,20 +14,20 @@ from dotenv import load_dotenv
 
 from llama_index.core import (
     VectorStoreIndex, 
+    SummaryIndex, 
     StorageContext, 
     load_index_from_storage,
     SimpleDirectoryReader,
     Settings,
     Response,
+    Document, 
 )
-from llama_index.core.llms import LLM # Abstract LLM type
-from llama_index.core.embeddings import BaseEmbedding # Abstract Embedding type
+from llama_index.core.llms import LLM
+from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler, CBEventType
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,64 +36,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class LlamaIndexRAG:
-    """
-    A class to handle LlamaIndex RAG operations for YouTube transcripts.
-    Supports OpenAI and Gemini providers with provider-specific index storage.
-    """
     def __init__(
         self,
-        transcript_dir: str, # Made non-optional, should always be provided
-        storage_dir_base: str = 'data/storage', # Base for all provider-specific storages
+        transcript_dir: str,
+        storage_dir_base: str = 'data/storage',
         llm_provider: str = "openai", 
         llm_model_name: Optional[str] = None, 
         embedding_model_name: Optional[str] = None,
         chunk_size: int = 1024,
         chunk_overlap: int = 20,
         temperature: float = 0.1,
-        max_tokens: int = 1024, # Note: For Gemini, this might be part of generation_config
-        similarity_top_k: int = 2
+        max_tokens: int = 1024,
+        similarity_top_k: int = 3
     ):
-        """
-        Initialize the LlamaIndexRAG object.
-        
-        Args:
-            transcript_dir: Directory containing transcript files (e.g., "data/transcripts/my_playlist").
-            storage_dir_base: Base directory where provider-specific storages will be created 
-                              (e.g., "data/storage").
-            llm_provider: "openai" or "gemini".
-            llm_model_name: Name of the LLM model to use (provider-specific).
-            embedding_model_name: Name of the embedding model to use (provider-specific).
-            chunk_size: Size of text chunks for indexing.
-            chunk_overlap: Overlap between chunks.
-            temperature: Temperature for LLM generation.
-            max_tokens: Maximum tokens for LLM generation (OpenAI specific, Gemini uses generation_config).
-            similarity_top_k: Number of similar nodes to retrieve for queries.
-        """
         if not transcript_dir:
             raise ValueError("transcript_dir must be provided.")
             
         self.transcript_dir = os.path.normpath(transcript_dir)
         self.llm_provider = llm_provider.lower()
         
-        # Extract the specific name of the transcript set (e.g., 'my_playlist')
-        # This assumes transcript_dir is like 'data/transcripts/folder_name' or just 'folder_name'
         transcript_set_name = os.path.basename(self.transcript_dir)
-        if not transcript_set_name: # Should not happen if transcript_dir is valid
+        if not transcript_set_name:
             transcript_set_name = "default_transcripts" 
             logger.warning(f"Could not determine transcript set name from '{self.transcript_dir}', using '{transcript_set_name}'.")
 
-        # Construct provider-specific storage path
-        # e.g., data/storage/my_playlist/openai/vector
-        self.storage_dir = os.path.join(
+        self.provider_storage_base = os.path.join(
             storage_dir_base, 
             transcript_set_name,
-            self.llm_provider,
-            'vector'
+            self.llm_provider
         )
-        logger.info(f"Using provider-specific storage directory: {self.storage_dir}")
+        
+        self.vector_storage_dir = os.path.join(self.provider_storage_base, 'vector_index')
+        self.summary_storage_dir = os.path.join(self.provider_storage_base, 'summary_index')
+        
+        logger.info(f"Vector index storage directory: {self.vector_storage_dir}")
+        logger.info(f"Summary index storage directory: {self.summary_storage_dir}")
             
         os.makedirs(self.transcript_dir, exist_ok=True)
-        os.makedirs(self.storage_dir, exist_ok=True)
+        os.makedirs(self.vector_storage_dir, exist_ok=True)
+        os.makedirs(self.summary_storage_dir, exist_ok=True)
         
         self.llm_model_name = llm_model_name
         self.embedding_model_name = embedding_model_name
@@ -106,232 +87,283 @@ class LlamaIndexRAG:
         
         self.debug_handler = None
         self.callback_manager = None
+
+        self.vector_index: Optional[VectorStoreIndex] = None
+        self.summary_index: Optional[SummaryIndex] = None
+        self.documents: Optional[List[Document]] = None
         
         self._setup_llama_index()
-        self.index = self._load_or_create_index()
+        self._load_or_create_indexes()
+        
+        # Keep self.index pointing to vector_index for any existing generic references
+        # but prefer specific query methods (query_vector_index, query_summary_index)
+        self.index = self.vector_index 
         
     def _setup_llama_index(self):
-        """Set up LlamaIndex global settings with LLM and embedding model based on provider."""
         logger.info(f"Setting up LlamaIndex with LLM provider: {self.llm_provider}")
-
         llm_instance: Optional[LLM] = None
         embed_model_instance: Optional[BaseEmbedding] = None
 
         if self.llm_provider == "openai":
             from llama_index.llms.openai import OpenAI
             from llama_index.embeddings.openai import OpenAIEmbedding
-
-            # Prioritize model names passed to constructor, then env vars, then defaults
             _llm_model = self.llm_model_name or os.getenv('OPENAI_LLM_MODEL') or 'gpt-3.5-turbo'
             _embedding_model = self.embedding_model_name or os.getenv('OPENAI_EMBEDDING_MODEL') or 'text-embedding-3-small'
-            
             logger.info(f"Using OpenAI LLM: {_llm_model}, Embedding: {_embedding_model}")
-            if not os.getenv('OPENAI_API_KEY'):
-                logger.warning("OPENAI_API_KEY environment variable not set. OpenAI models may fail.")
-
-            llm_instance = OpenAI(
-                temperature=self.temperature, 
-                max_tokens=self.max_tokens,
-                model=_llm_model
-            )
+            if not os.getenv('OPENAI_API_KEY'): logger.warning("OPENAI_API_KEY not set.")
+            llm_instance = OpenAI(temperature=self.temperature, max_tokens=self.max_tokens, model=_llm_model)
             embed_model_instance = OpenAIEmbedding(model=_embedding_model)
-
         elif self.llm_provider == "gemini":
             try:
                 from llama_index.llms.gemini import Gemini
                 from llama_index.embeddings.gemini import GeminiEmbedding
-            except ImportError:
-                logger.error("Gemini packages not found. Please install with `pip install llama-index-llms-gemini llama-index-embeddings-gemini google-generativeai`")
+            except ImportError: 
+                logger.error("Gemini packages not found. `pip install llama-index-llms-gemini llama-index-embeddings-gemini`")
                 raise
-
-            _llm_model = self.llm_model_name or os.getenv('GEMINI_LLM_MODEL') or 'models/gemini-1.5-flash-latest' # Using flash for speed/cost
+            _llm_model = self.llm_model_name or os.getenv('GEMINI_LLM_MODEL') or 'models/gemini-1.5-flash-latest'
             _embedding_model = self.embedding_model_name or os.getenv('GEMINI_EMBEDDING_MODEL') or 'models/text-embedding-004'
-            
             logger.info(f"Using Gemini LLM: {_llm_model}, Embedding: {_embedding_model}")
-            if not os.getenv('GOOGLE_API_KEY'):
-                logger.warning("GOOGLE_API_KEY environment variable not set. Gemini models may fail.")
-            
-            llm_instance = Gemini(
-                model_name=_llm_model,
-                temperature=self.temperature,
-                # generation_config={"max_output_tokens": self.max_tokens} # Example if needed
-            )
-            embed_model_instance = GeminiEmbedding(model_name=_embedding_model)
+            if not os.getenv('GEMINI_API_KEY'): logger.warning("GEMINI_API_KEY not set.")
+            llm_instance = Gemini(model_name=_llm_model, temperature=self.temperature)
+            embed_model_instance = GeminiEmbedding(model_name=_embedding_model, task_type="RETRIEVAL_DOCUMENT")
         else:
-            raise ValueError(f"Unsupported LLM provider: {self.llm_provider}. Choose 'openai' or 'gemini'.")
+            raise ValueError(f"Unsupported LLM provider: {self.llm_provider}.")
 
         if llm_instance is None or embed_model_instance is None:
-            # This case should ideally be caught by the ValueError above or API key warnings
             raise RuntimeError(f"Failed to initialize LLM or embedding model for provider {self.llm_provider}")
-
-        # Set LlamaIndex global settings
+        
+        self.actual_llm_model_name = _llm_model
+        self.actual_embedding_model_name = _embedding_model
+        
         Settings.llm = llm_instance
         Settings.embed_model = embed_model_instance
         Settings.chunk_size = self.chunk_size
         Settings.chunk_overlap = self.chunk_overlap
-    
-    def _load_or_create_index(self) -> Optional[VectorStoreIndex]:
-        """Load an existing index from self.storage_dir or create a new one if it doesn't exist."""
-        index_exists = os.path.exists(os.path.join(self.storage_dir, "docstore.json"))
-        
-        if index_exists:
-            logger.info(f"Loading existing index from {self.storage_dir} for provider {self.llm_provider}")
-            try:
-                storage_context = StorageContext.from_defaults(persist_dir=self.storage_dir)
-                index = load_index_from_storage(storage_context)
-                logger.info(f"Successfully loaded index from {self.storage_dir}")
-                return index if isinstance(index, VectorStoreIndex) else None
-            except Exception as e:
-                logger.error(f"Error loading index from {self.storage_dir}: {str(e)}. Attempting to create new index instead.", exc_info=True)
-                return self._create_new_index()
-        else:
-            logger.info(f"No existing index found at {self.storage_dir} for provider {self.llm_provider}. Creating new index.")
-            return self._create_new_index()
-    
-    def _create_new_index(self) -> Optional[VectorStoreIndex]:
-        """Create a new index from documents in the transcript directory."""
+
+    def _load_documents(self) -> Optional[List[Document]]:
+        if self.documents:
+            return self.documents
+
         if not os.path.exists(self.transcript_dir) or not os.listdir(self.transcript_dir):
-            logger.warning(f"Transcript directory {self.transcript_dir} is empty or does not exist. Cannot create index.")
+            logger.warning(f"Transcript directory {self.transcript_dir} is empty or does not exist.")
             return None
             
-        logger.info(f"Creating new index from documents in {self.transcript_dir} using {self.llm_provider} embeddings.")
-        
+        logger.info(f"Loading documents from {self.transcript_dir}")
         filename_fn = lambda filename: {'episode_title': os.path.splitext(os.path.basename(filename))[0]}
-        
         try:
-            documents = SimpleDirectoryReader(
+            loaded_docs = SimpleDirectoryReader(
                 self.transcript_dir,
                 filename_as_id=True,
                 file_metadata=filename_fn
             ).load_data()
+            if not loaded_docs:
+                logger.warning(f"No documents loaded from {self.transcript_dir}.")
+                return None
+            for doc in loaded_docs:
+                if 'episode_title' not in doc.excluded_llm_metadata_keys:
+                     doc.excluded_llm_metadata_keys.append('episode_title')
+            self.documents = loaded_docs
+            logger.info(f"Loaded {len(self.documents)} documents.")
+            return self.documents
         except Exception as e:
             logger.error(f"Error reading documents from {self.transcript_dir}: {e}", exc_info=True)
             return None
 
-        if not documents:
-            logger.warning(f"No documents loaded from {self.transcript_dir}. Cannot create index.")
-            return None
+    def _load_or_create_indexes(self):
+        docs = self._load_documents()
 
-        for doc in documents:
-            # Ensure 'episode_title' is excluded if it exists, handle potential absence
-            if 'episode_title' not in doc.excluded_llm_metadata_keys:
-                 doc.excluded_llm_metadata_keys.append('episode_title')
-            
-        logger.info(f"Loaded {len(documents)} documents for indexing.")
+        # VectorStoreIndex
+        vector_index_exists = os.path.exists(os.path.join(self.vector_storage_dir, "docstore.json"))
+        if vector_index_exists:
+            logger.info(f"Loading existing VectorStoreIndex from {self.vector_storage_dir}")
+            try:
+                storage_context_vector = StorageContext.from_defaults(persist_dir=self.vector_storage_dir)
+                loaded_index = load_index_from_storage(storage_context_vector)
+                if isinstance(loaded_index, VectorStoreIndex):
+                    self.vector_index = loaded_index
+                    logger.info(f"Successfully loaded VectorStoreIndex.")
+                else:
+                    logger.warning(f"Loaded object from {self.vector_storage_dir} is not a VectorStoreIndex. Type: {type(loaded_index)}. Will attempt to create new.")
+                    if docs: self.vector_index = self._create_vector_index(docs)
+            except Exception as e:
+                logger.error(f"Error loading VectorStoreIndex: {str(e)}. Attempting to create new.", exc_info=True)
+                if docs: self.vector_index = self._create_vector_index(docs)
+        else:
+            logger.info(f"No existing VectorStoreIndex found at {self.vector_storage_dir}. Creating new one.")
+            if docs: self.vector_index = self._create_vector_index(docs)
+
+        # SummaryIndex
+        summary_index_exists = os.path.exists(os.path.join(self.summary_storage_dir, "docstore.json"))
+        if summary_index_exists:
+            logger.info(f"Loading existing SummaryIndex from {self.summary_storage_dir}")
+            try:
+                storage_context_summary = StorageContext.from_defaults(persist_dir=self.summary_storage_dir)
+                loaded_index = load_index_from_storage(storage_context_summary)
+                if isinstance(loaded_index, SummaryIndex):
+                    self.summary_index = loaded_index
+                    logger.info(f"Successfully loaded SummaryIndex.")
+                else:
+                    logger.warning(f"Loaded object from {self.summary_storage_dir} is not a SummaryIndex. Type: {type(loaded_index)}. Will attempt to create new.")
+                    if docs: self.summary_index = self._create_summary_index(docs)
+            except Exception as e:
+                logger.error(f"Error loading SummaryIndex: {str(e)}. Attempting to create new.", exc_info=True)
+                if docs: self.summary_index = self._create_summary_index(docs)
+        else:
+            logger.info(f"No existing SummaryIndex found at {self.summary_storage_dir}. Creating new one.")
+            if docs: self.summary_index = self._create_summary_index(docs)
         
+        self.index = self.vector_index
+
+
+    def _create_vector_index(self, documents: List[Document]) -> Optional[VectorStoreIndex]:
+        logger.info(f"Creating new VectorStoreIndex using {self.llm_provider} embeddings.")
         try:
-            index = VectorStoreIndex.from_documents(
-                documents,
-                show_progress=True # Progress bar in console
-            )
-            index.storage_context.persist(persist_dir=self.storage_dir)
-            logger.info(f"Index created and persisted to {self.storage_dir}")
+            index = VectorStoreIndex.from_documents(documents, show_progress=True)
+            index.storage_context.persist(persist_dir=self.vector_storage_dir)
+            logger.info(f"VectorStoreIndex created and persisted to {self.vector_storage_dir}")
             return index
         except Exception as e:
-            logger.error(f"Failed to create or persist index: {e}", exc_info=True)
+            logger.error(f"Failed to create or persist VectorStoreIndex: {e}", exc_info=True)
+            return None
+
+    def _create_summary_index(self, documents: List[Document]) -> Optional[SummaryIndex]:
+        logger.info(f"Creating new SummaryIndex using {self.llm_provider} LLM.")
+        try:
+            index = SummaryIndex.from_documents(documents, show_progress=True)
+            index.storage_context.persist(persist_dir=self.summary_storage_dir)
+            logger.info(f"SummaryIndex created and persisted to {self.summary_storage_dir}")
+            return index
+        except Exception as e:
+            logger.error(f"Failed to create or persist SummaryIndex: {e}", exc_info=True)
             return None
             
-    def refresh_index(self):
-        """Refresh the index with new or changed documents."""
-        if not self.index:
-            logger.warning("No index object exists to refresh. Attempting to create a new one.")
-            self.index = self._create_new_index() # This will use the current provider settings
-            return 
-            
-        logger.info(f"Refreshing index at {self.storage_dir} with documents from {self.transcript_dir} using {self.llm_provider} embeddings.")
+    def refresh_indexes(self):
+        logger.info(f"Attempting to refresh indexes.")
         
-        filename_fn = lambda filename: {'episode_title': os.path.splitext(os.path.basename(filename))[0]}
-        
-        try:
-            current_documents = SimpleDirectoryReader(
-                self.transcript_dir,
-                filename_as_id=True,
-                file_metadata=filename_fn
-            ).load_data()
-        except Exception as e:
-            logger.error(f"Error reading documents from {self.transcript_dir} for refresh: {e}", exc_info=True)
+        # Reload documents to ensure we have the latest for refresh/rebuild
+        self.documents = None # Clear cached documents
+        current_docs = self._load_documents()
+
+        if not current_docs:
+            logger.warning("No documents loaded, cannot refresh or rebuild indexes.")
             return
 
-        if not current_documents:
-            logger.warning(f"No documents found in {self.transcript_dir} for refresh. Index not changed.")
-            return
+        # Refresh VectorStoreIndex
+        if not self.vector_index:
+            logger.warning("No VectorStoreIndex to refresh. Creating a new one.")
+            self.vector_index = self._create_vector_index(current_docs)
+        else:
+            logger.info(f"Refreshing VectorStoreIndex at {self.vector_storage_dir}")
+            try:
+                # SimpleDirectoryReader re-reads for refresh_ref_docs to detect changes
+                # We pass the already loaded current_docs which should be up-to-date
+                refreshed_results = self.vector_index.refresh_ref_docs(
+                    current_docs, # Pass the freshly loaded documents
+                    update_kwargs={"delete_kwargs": {'delete_from_docstore': True}}
+                )
+                changed_docs_count = sum(refreshed_results)
+                if changed_docs_count > 0:
+                    logger.info(f"VectorStoreIndex refresh affected {changed_docs_count} document states.")
+                    self.vector_index.storage_context.persist(persist_dir=self.vector_storage_dir)
+                    logger.info(f"Refreshed VectorStoreIndex persisted.")
+                else:
+                    logger.info("No changes to VectorStoreIndex during refresh.")
+            except Exception as e:
+                logger.error(f"Failed to refresh VectorStoreIndex: {e}", exc_info=True)
 
-        for doc in current_documents:
-            if 'episode_title' not in doc.excluded_llm_metadata_keys:
-                 doc.excluded_llm_metadata_keys.append('episode_title')
-            
-        logger.info(f"Loaded {len(current_documents)} documents from disk for refresh.")
+        # Rebuild SummaryIndex
+        logger.info(f"Rebuilding SummaryIndex at {self.summary_storage_dir} to ensure it's up-to-date.")
+        self.summary_index = self._create_summary_index(current_docs) # Rebuild with fresh docs
         
-        try:
-            refreshed_results = self.index.refresh_ref_docs(
-                current_documents,
-                update_kwargs={"delete_kwargs": {'delete_from_docstore': True}} # Important for proper cleanup
-            )
-            
-            # refreshed_results is a list of booleans indicating if a doc was updated/added/deleted
-            changed_docs_count = sum(refreshed_results)
-            
-            if changed_docs_count > 0:
-                logger.info(f"Index refresh affected {changed_docs_count} document states (added/removed/updated).")
-                self.index.storage_context.persist(persist_dir=self.storage_dir)
-                logger.info(f"Refreshed index persisted to {self.storage_dir}")
-            else:
-                logger.info("No documents were added, removed, or changed during refresh.")
-        except Exception as e:
-            logger.error(f"Failed to refresh index: {e}", exc_info=True)
-            
-    def query(self, query_text: str, similarity_top_k: Optional[int] = None, debug: bool = False) -> Tuple[Response, List[Any]]:
-        """
-        Query the index with a natural language question.
-        
-        Args:
-            query_text: The question to ask.
-            similarity_top_k: Number of similar nodes to retrieve (overrides instance default if provided).
-            debug: Whether to enable LlamaIndex debug logging for this query.
-            
-        Returns:
-            Tuple of (LlamaIndex Response object, list of source_nodes).
-        """
-        if not self.index:
-            logger.error("No index available for querying.")
-            return Response(response="Error: No index loaded or available for querying.", source_nodes=[]), []
+        self.index = self.vector_index
+
+
+    def query_vector_index(self, query_text: str, similarity_top_k: Optional[int] = None, debug: bool = False) -> Tuple[Response, List[Any]]:
+        if not self.vector_index:
+            logger.error("VectorStoreIndex not available for querying.")
+            return Response(response="Error: Q&A index not loaded.", source_nodes=[]), []
             
         if debug:
-            if not self.debug_handler: # Create handler if it doesn't exist
-                self.debug_handler = LlamaDebugHandler(print_trace_on_end=True)
+            if not self.debug_handler: self.debug_handler = LlamaDebugHandler(print_trace_on_end=True)
             if not self.callback_manager or self.debug_handler not in self.callback_manager.handlers:
                 self.callback_manager = CallbackManager([self.debug_handler])
             Settings.callback_manager = self.callback_manager
-            logger.info("Debug handler enabled for this query.")
+            logger.info("Debug handler enabled for this Q&A query.")
         else:
-            Settings.callback_manager = CallbackManager([]) # Ensure it's off if not debugging this query
+            Settings.callback_manager = CallbackManager([])
 
         top_k_to_use = similarity_top_k if similarity_top_k is not None else self.similarity_top_k
         
         try:
-            query_engine = self.index.as_query_engine(similarity_top_k=top_k_to_use)
-            logger.info(f"Executing query: '{query_text}' with similarity_top_k={top_k_to_use} using {self.llm_provider} LLM.")
+            query_engine = self.vector_index.as_query_engine(similarity_top_k=top_k_to_use)
+            logger.info(f"Executing Q&A query: '{query_text}' with similarity_top_k={top_k_to_use} using {self.llm_provider} LLM.")
             response_obj = query_engine.query(query_text)
 
             if not isinstance(response_obj, Response):
-                logger.warning(f"Query returned type {type(response_obj)}, attempting to coerce to Response object.")
-                response_text_str = str(response_obj) 
-                source_nodes_list = getattr(response_obj, "source_nodes", []) 
+                logger.warning(f"Q&A Query returned type {type(response_obj)}, coercing.")
+                response_text_str = str(response_obj); source_nodes_list = getattr(response_obj, "source_nodes", []) 
                 response_obj = Response(response=response_text_str, source_nodes=source_nodes_list)
-            
             return response_obj, getattr(response_obj, "source_nodes", [])
         except Exception as e:
-            logger.error(f"Error during query execution: {e}", exc_info=True)
-            return Response(response=f"Error during query: {str(e)}", source_nodes=[]), []
+            logger.error(f"Error during Q&A query: {e}", exc_info=True)
+            return Response(response=f"Error during Q&A query: {str(e)}", source_nodes=[]), []
+
+    def query_summary_index(self, 
+                            query_text: Optional[str] = None, 
+                            output_format: str = "summary", # NEW: "summary" or "outline"
+                            debug: bool = False) -> Tuple[Response, List[Any]]:
+        if not self.summary_index:
+            logger.error("SummaryIndex not available for querying.")
+            return Response(response="Error: Summary index not loaded.", source_nodes=[]), []
+
+        if debug:
+            summary_debug_handler = LlamaDebugHandler(print_trace_on_end=True)
+            Settings.callback_manager = CallbackManager([summary_debug_handler])
+            logger.info("Debug handler enabled for this summary query.")
+        else:
+            Settings.callback_manager = CallbackManager([])
+
+        # Determine the prompt based on desired output_format
+        if output_format == "outline":
+            # Prompt for a structured outline. You might need to experiment with this prompt.
+            # Asking for Markdown can help with formatting.
+            actual_query = query_text or \
+                ("List the main topics of this content.")
+        else: # Default to "summary"
+            actual_query = query_text or "Provide a concise summary of all the content."
+        
+        logger.info(f"Executing summary_index query for '{output_format}': '{actual_query}' using {self.llm_provider} LLM.")
+        
+        try:
+            # For SummaryIndex, response_mode="tree_summarize" is good for hierarchical tasks.
+            # Other modes like "refine" or "compact" might also be experimented with.
+            query_engine = self.summary_index.as_query_engine(
+                response_mode="tree_summarize", 
+                use_async=False,
+                # verbose=True # Can be helpful for debugging summary_index behavior
+            )
+            response_obj = query_engine.query(actual_query)
+
+            if not isinstance(response_obj, Response):
+                logger.warning(f"Summary Query returned type {type(response_obj)}, coercing.")
+                response_text_str = str(response_obj); source_nodes_list = getattr(response_obj, "source_nodes", [])
+                response_obj = Response(response=response_text_str, source_nodes=source_nodes_list)
+            
+            # The response_obj.response will contain the LLM's attempt at the outline or summary.
+            # source_nodes might not be as directly relevant for a generated outline as for Q&A.
+            return response_obj, getattr(response_obj, "source_nodes", [])
+        except Exception as e:
+            logger.error(f"Error during summary_index query for {output_format}: {e}", exc_info=True)
+            return Response(response=f"Error during summary_index query for {output_format}: {str(e)}", source_nodes=[]), []
         
     def get_debug_info(self) -> Optional[Dict[str, Any]]:
-        """Get debug info from the last query if debug was enabled."""
-        if not self.debug_handler:
-            logger.info("Debug handler was not active for the last query or has been cleared.")
+        # This will return info from the last debug handler that was active
+        # (either from Q&A or Summary if they used self.debug_handler)
+        # If summary query used its own local debug_handler, this won't capture it.
+        # For simplicity, we assume self.debug_handler was used if debug=True for Q&A.
+        if not self.debug_handler: 
+            logger.info("Main debug handler was not active for the last Q&A query or has been cleared.")
             return None
-            
-        # It's good practice to clear the handler's events after retrieving them if they are per-query
-        # For now, just return them.
         try:
             info = {
                 "llm_events": self.debug_handler.get_event_time_info(CBEventType.LLM),
@@ -339,39 +371,32 @@ class LlamaIndexRAG:
                 "retrieval_events": self.debug_handler.get_event_time_info(CBEventType.RETRIEVE),
                 "io_events": self.debug_handler.get_llm_inputs_outputs()
             }
-            # Optionally clear events: self.debug_handler.clear_event_infos()
             return info
         except Exception as e:
             logger.error(f"Error retrieving debug info: {e}", exc_info=True)
             return None
         
     def count_documents(self) -> int:
-        """Count the number of .txt documents in the transcript directory."""
-        if not os.path.exists(self.transcript_dir):
-            return 0
-        try:
-            return len([f for f in os.listdir(self.transcript_dir) if f.endswith('.txt')])
+        if not os.path.exists(self.transcript_dir): return 0
+        try: return len([f for f in os.listdir(self.transcript_dir) if f.endswith('.txt')])
         except Exception as e:
             logger.error(f"Error counting documents in {self.transcript_dir}: {e}", exc_info=True)
             return 0
         
-    def get_document_stats(self) -> Optional[Dict[str, int]]:
-        """Get statistics about the documents and nodes in the current index."""
-        if not self.index or not hasattr(self.index, 'docstore'):
-            logger.info("No index or docstore available to get stats from.")
-            return None
-            
-        try:
-            # Number of nodes (chunks) in the index's document store
-            node_count = len(self.index.docstore.docs)
-            
-            # Number of unique source documents (based on .txt files in transcript_dir)
-            source_document_count = self.count_documents()
-            
-            return {
-                "document_count": source_document_count, # Number of original .txt files
-                "node_count": node_count                 # Number of chunks/nodes in the index
-            }
-        except Exception as e:
-            logger.error(f"Error getting document stats: {str(e)}", exc_info=True)
-            return None
+    def get_document_stats(self) -> Optional[Dict[str, Union[int, str]]]:
+        doc_count = self.count_documents()
+        node_count_str = "N/A"
+
+        if self.vector_index and hasattr(self.vector_index, 'docstore'):
+            try:
+                node_count_str = str(len(self.vector_index.docstore.docs))
+            except Exception as e:
+                logger.error(f"Error getting node count from VectorStoreIndex: {e}")
+        elif self.summary_index: # If no vector index, at least show doc count
+             pass # node_count_str remains "N/A (SummaryIndex)" or similar
+
+        if doc_count > 0 or node_count_str != "N/A":
+            return {"document_count": doc_count, "node_count": node_count_str}
+        
+        logger.info("No index available to get stats from.")
+        return None
